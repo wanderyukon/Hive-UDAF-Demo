@@ -22,8 +22,10 @@ import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 @Description(name = "maxrow", value = "_FUNC_(expr) - Returns the maximum value of expr and values of associated columns as a struct")
 public class GenericUDAFMaxRow extends AbstractGenericUDAFResolver {
 
+    /*创建LOG对象，用来写入警告和错误到 hive 的 log*/
     static final Log LOG = LogFactory.getLog(GenericUDAFMaxRow.class.getName());
 
+    /* 验证数据类型，主要是实现操作符的重载。*/
     @Override
     public GenericUDAFEvaluator getEvaluator(TypeInfo[] parameters) throws SemanticException {
         // Verify that the first parameter supports comparisons.
@@ -41,9 +43,31 @@ public class GenericUDAFMaxRow extends AbstractGenericUDAFResolver {
         ObjectInspector[] outputOIs;
         ObjectInspector structOI;
 
-        /* 实例化 Evaluator 类的时候调用的，在不同的阶段需要返回不同的 OI。*/
+        /*
+        *  实例化 Evaluator 类的时候调用的，在不同的阶段需要返回不同的 OI。
+        *
+        *
+        *  嵌套类 Mode
+        *
+        *  PARTIAL1: 这个是 MapReduce 的 map 阶段: 从原始数据到部分数据聚合
+        *            将会调用 iterate() 和 terminatePartial()
+        *
+        *  PARTIAL2: 这个是 MapReduce 的 map 端的 Combiner 阶段，负责在 map 端合并 map 的数据: 从部分数据聚合到部分数据聚合
+        *            将会调用 merge() 和 terminatePartial()
+        *
+        *  FINAL:    MapReduce 的 reduce 阶段: 从部分数据的聚合到完全聚合
+        *            将会调用 merge() 和 terminate()
+        *
+        *  COMPLETE: 如果出现了这个阶段，表示 MapReduce 只有 map，没有 reduce，所以 map 端就直接出结果了: 从原始数据直接到完全聚合
+        *            将会调用 iterate() 和 terminate()
+        *
+        *  一般情况下，完整的UDAF逻辑是一个 mapreduce 过程，如果有 mapper 和 reducer，就会经历 PARTIAL1(mapper)，FINAL(reducer)，
+        *  如果还有 combiner，那就会经历 PARTIAL1(mapper)，PARTIAL2(combiner)，FINAL(reducer)。
+        *  而有一些情况下的 mapreduce，只有 mapper，而没有 reducer，所以就会只有 COMPLETE 阶段，这个阶段直接输入原始数据，出结果。
+        * */
         @Override
         public ObjectInspector init(Mode mode, ObjectInspector[] parameters) throws HiveException {
+            System.out.println("init");
             super.init(mode, parameters);
 
             int length = parameters.length;
@@ -62,6 +86,7 @@ public class GenericUDAFMaxRow extends AbstractGenericUDAFResolver {
 
         /* Initialize the UDAF on the map side. */
         private void initMapSide(ObjectInspector[] parameters) throws HiveException {
+            System.out.println("initMapSide");
             int length = parameters.length;
             outputOIs = new ObjectInspector[length];
             List<String> fieldNames = new ArrayList<String>(length);
@@ -69,15 +94,16 @@ public class GenericUDAFMaxRow extends AbstractGenericUDAFResolver {
 
             for (int i = 0; i < length; i++) {
                 fieldNames.add("col" + i); // field names are not made available! :(
-                outputOIs[i] = ObjectInspectorUtils.getStandardObjectInspector(parameters[i]);
+                outputOIs[i] = ObjectInspectorUtils.getStandardObjectInspector(parameters[i]);  // StandardObjectInspector
             }
 
             inputOIs = parameters;
-            structOI = ObjectInspectorFactory.getStandardStructObjectInspector(fieldNames, fieldOIs);
+            structOI = ObjectInspectorFactory.getStandardStructObjectInspector(fieldNames, fieldOIs);  // StructObjectInspector
         }
 
         /* Initialize the UDAF on the reduce side (or the map side in some cases). */
         private void initReduceSide(StructObjectInspector inputStructOI) throws HiveException {
+            System.out.println("initReduceSide");
             List<? extends StructField> fields = inputStructOI.getAllStructFieldRefs();
             int length = fields.size();
             inputOIs = new ObjectInspector[length];
@@ -97,12 +123,14 @@ public class GenericUDAFMaxRow extends AbstractGenericUDAFResolver {
         /* 获取存放中间结果的对象 */
         @Override
         public AggregationBuffer getNewAggregationBuffer() throws HiveException {
+            System.out.println("getNewAggregationBuffer");
             MaxAgg result = new MaxAgg();
             return result;
         }
 
         @Override
         public void reset(AggregationBuffer agg) throws HiveException {
+            System.out.println("reset");
             MaxAgg maxagg = (MaxAgg) agg;
             maxagg.objects = null;
         }
@@ -110,22 +138,25 @@ public class GenericUDAFMaxRow extends AbstractGenericUDAFResolver {
         /*处理一行数据*/
         @Override
         public void iterate(AggregationBuffer agg, Object[] parameters) throws HiveException {
+            System.out.println("iterate");
             merge(agg, parameters);
         }
 
         /* 返回部分聚合数据的持久化对象。
-         * 因为调用这个方法时，说明已经是map或者combine的结束了，
-         * 必须将数据持久化以后交给reduce进行处理。
-         * 只支持JAVA原始数据类型及其封装类型、HADOOP Writable类型、List、Map，
-         * 不能返回自定义的类，即使实现了Serializable也不行，否则会出现问题或者错误的结果。*/
+         * 因为调用这个方法时，说明已经是 map 或者 combine 的结束了，
+         * 必须将数据持久化以后交给 reduce 进行处理。
+         * 只支持JAVA原始数据类型及其封装类型、HADOOP Writable 类型、List、Map，
+         * 不能返回自定义的类，即使实现了 Serializable 也不行，否则会出现问题或者错误的结果。*/
         @Override
         public Object terminatePartial(AggregationBuffer agg) throws HiveException {
+            System.out.println("terminatePartial");
             return terminate(agg);
         }
 
-        /*将terminatePartial返回的部分聚合数据进行合并，需要使用到对应的OI。*/
+        /*将 terminatePartial 返回的部分聚合数据进行合并，需要使用到对应的 OI。*/
         @Override
         public void merge(AggregationBuffer agg, Object partial) throws HiveException {
+            System.out.println("merge");
             if (partial != null) {
                 MaxAgg maxagg = (MaxAgg) agg;
                 List<Object> objects;
@@ -160,6 +191,7 @@ public class GenericUDAFMaxRow extends AbstractGenericUDAFResolver {
         /*生成最终结果*/
         @Override
         public Object terminate(AggregationBuffer agg) throws HiveException {
+            System.out.println("terminate");
             MaxAgg maxagg = (MaxAgg) agg;
             return Arrays.asList(maxagg.objects);
         }

@@ -9,8 +9,6 @@ import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.DoubleObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.IntObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory;
-import org.apache.hadoop.io.DoubleWritable;
-import org.apache.hadoop.io.IntWritable;
 
 import java.util.*;
 
@@ -23,24 +21,6 @@ public class GenericUDFAvg extends GenericUDF {
     static final Log LOG = LogFactory.getLog(GenericUDFAvg.class.getName());
 
     private MapObjectInspector mapOI;
-
-    private class KV {
-        private double k;
-        private int v;
-
-        public KV(double k, int v) {
-            this.k = k;
-            this.v = v;
-        }
-
-        public double getK() {
-            return k;
-        }
-
-        public int getV() {
-            return v;
-        }
-    }
 
     /**
      * 这个方法只调用一次，并且在evaluate()方法之前调用。
@@ -80,40 +60,36 @@ public class GenericUDFAvg extends GenericUDF {
     public Object evaluate(DeferredObject[] arguments) throws HiveException {
 
         // 通过 ObjectInspector 获取参数的值
-        Map<DoubleObjectInspector, IntObjectInspector> map = (HashMap<DoubleObjectInspector, IntObjectInspector>) mapOI.getMap(arguments[0].get());
-        // 存放 map 的 list
-        List<KV> kvl = new ArrayList<KV>(map.size());
-        // 临时 键 值 变量
-        double k;
-        int v;
-        // 值的总和
-        int sum = 0;
+        Map<Double, Integer> map = (HashMap<Double, Integer>) mapOI.getMap(arguments[0].get());
 
-        // 遍历 map 放入 list，并计算值的总和
-        Iterator<Map.Entry<DoubleObjectInspector, IntObjectInspector>> it = map.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<DoubleObjectInspector, IntObjectInspector> n = it.next();
-            // ObjectInspector 可以强转为 Writable 类型 （org.apache.hadoop.io 包）
-            k = ((DoubleWritable) n.getKey()).get();
-            v = ((IntWritable) n.getValue()).get();
-            kvl.add(new KV(k, v));
-            sum += v;
+        // 如果 Map 大小为 1，就不需要排序了
+        if (map.size() == 1) {
+            double result = map.keySet().iterator().next();
+            return PrimitiveObjectInspectorFactory.writableDoubleObjectInspector.create(result);
         }
 
-        // 将 list 根据 value 从大到小进行排序
-        Collections.sort(kvl, new Comparator<KV>() {
-            public int compare(KV o1, KV o2) {
-                return o2.getV() - o1.getV();
+        // 值的总和
+        int sum = 0;
+        Iterator<Integer> i = map.values().iterator();
+        while (i.hasNext()) {
+            sum += i.next();
+        }
+
+        // 将 Map 根据 value 从大到小排序成 List
+        List<Map.Entry<Double, Integer>> list = new ArrayList<Map.Entry<Double, Integer>>(map.entrySet());
+        Collections.sort(list, new Comparator<Map.Entry<Double, Integer>>() {
+            public int compare(Map.Entry<Double, Integer> o1, Map.Entry<Double, Integer> o2) {
+                return o2.getValue().compareTo(o1.getValue());
             }
         });
 
         // 取 80% 的量
-        int sum_8 = (int) (sum * 0.8);
+        int sum_8 = (int) Math.ceil(sum * 0.8);
         int last = sum_8;
         double result = 0;
-        for (KV kv : kvl) {
-            k = kv.getK();
-            v = kv.getV();
+        for (Map.Entry<Double, Integer> e : list) {
+            double k = e.getKey();
+            int v = e.getValue();
             if (v <= last) {
                 result += v * k;
                 last -= v;
